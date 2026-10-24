@@ -214,4 +214,8 @@ if submitted:
         "This is a predicted severity class, not a probability that an "
         "accident will occur. Confirm the meaning of each class using "
         "the dataset documentation."
+<<<<<<< HEAD
     )
+=======
+    )
+>>>>>>> 4e10067 (Update Smart Traffic Risk Prediction System)
