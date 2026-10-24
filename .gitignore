@@ -7,4 +7,3 @@ venv/
 .env.*
 .vscode/
 dataa/raw/*
-dataa/processed/*
