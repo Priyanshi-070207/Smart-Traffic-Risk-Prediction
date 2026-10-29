@@ -965,40 +965,241 @@ if selected_page == "Prediction":
             unsafe_allow_html=True,
         )
 
-    submitted = st.form_submit_button("Predict Severity")
+        submitted = st.form_submit_button(
+            "Predict severity class",
+            type="primary",
+            use_container_width=True,
+        )
+        
+    if submitted:
+        # Keep the exact feature names and order expected by the supplied model.
+        input_data = pd.DataFrame(
+            [{
+                "Day_of_Week": day_value,
+                "Accident_Location_A": location_value,
+                "Accident_Location_A_Chainage_km_RoadSide": roadside_value,
+                "Causes_D": cause_value,
+                "Road_Feature_E": road_feature_value,
+                "Road_Condition_F": road_condition_value,
+                "Weather_Conditions_H": weather_value,
+                "Vehicle_Type_Involved_J_V1": vehicle1_value,
+                "Vehicle_Type_Involved_J_V2": vehicle2_value,
+                "Accident_Month": month_value,
+                "Accident_DayOfWeek": day_of_week_value,
+                "Accident_Hour": hour_value,
+                "Is_Weekend": weekend_value,
+                "Accident_Location_A_Chainage_km": chainage_value,
+                "Accident_Year": year_value,
+            }],
+            columns=feature_columns,
+        )
 
-if submitted:
-    # Derive day-of-week code from the selected dataset value.
-    # This assumes Day_of_Week and Accident_DayOfWeek use the same coding.
-    # Verify this assumption against the dataset before relying on predictions.
-    input_data = pd.DataFrame([{
-        "Day_of_Week": day_value,
-        "Accident_Location_A": location_value,
-        "Accident_Location_A_Chainage_km_RoadSide": roadside_value,
-        "Causes_D": cause_value,
-        "Road_Feature_E": road_feature_value,
-        "Road_Condition_F": road_condition_value,
-        "Weather_Conditions_H": weather_value,
-        "Vehicle_Type_Involved_J_V1": vehicle1_value,
-        "Vehicle_Type_Involved_J_V2": vehicle2_value,
-        "Accident_Month": month_value,
-        "Accident_DayOfWeek": day_value,
-        "Accident_Hour": hour_value,
-        "Is_Weekend": is_weekend,
-        "Accident_Location_A_Chainage_km": chainage_value,
-        "Accident_Year": year_value
-    }], columns=feature_columns)
+        try:
+            prediction_input = input_data.copy()
 
-    # Match the saved model's input feature order.
-    encoded_prediction = model.predict(input_data).astype(int)
-    severity_prediction = label_encoder.inverse_transform(
-        encoded_prediction
-    )[0]
+            for column in categorical_features:
+                prediction_input[column] = (
+                    prediction_input[column]
+                    .astype("string")
+                    .fillna("Missing")
+                    .astype(str)
+                )
 
-    st.subheader("Prediction Result")
-    st.metric("Predicted severity class", int(severity_prediction))
-    st.info(
-        "This is a predicted severity class, not a probability that an "
-        "accident will occur. Confirm the meaning of each class using "
-        "the dataset documentation."
+            raw_prediction = np.asarray(
+                model.predict(prediction_input)
+            ).reshape(-1)
+
+            if raw_prediction.size == 0:
+                raise ValueError("The model returned no prediction.")
+
+            encoded_prediction = int(raw_prediction[0])
+
+            severity_prediction = label_encoder.inverse_transform(
+                np.asarray([encoded_prediction], dtype=int)
+            )[0]
+
+            st.session_state["last_prediction"] = {
+                "severity": severity_prediction,
+                "input": input_data.copy(),
+            }
+
+        except Exception as error:
+            st.error(
+                "Prediction could not be completed. Confirm that the selected values and "
+                "feature schema match the model used during training."
+            )
+            st.exception(error)
+
+    last_prediction = st.session_state.get("last_prediction")
+
+    if last_prediction is not None:
+        st.markdown(
+            '<div class="section-heading">Prediction result</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            '<div class="section-subtitle">Result from the saved model for the submitted conditions.</div>',
+            unsafe_allow_html=True,
+        )
+
+        result_col, details_col = st.columns([1, 1.35], gap="large")
+
+        with result_col:
+            st.markdown(
+                f"""
+                <div class="surface">
+                  <div class="mini-label">Predicted severity class</div>
+                  <div class="status-pill">Model prediction</div>
+                  <div class="result-number">{display_value(last_prediction["severity"])}</div>
+                  <div class="result-note">
+                    This is the severity class returned for the conditions you entered.
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with details_col:
+            st.markdown(
+                """
+                <div class="surface">
+                  <div class="mini-label">How to interpret this result</div>
+                  <div class="result-note">
+                    The output represents a predicted <b>accident severity class</b>, not the probability
+                    that an accident will occur. Use your dataset documentation or class codebook to
+                    interpret the exact meaning of the class label.
+                    <br><br>
+                    This tool is intended for educational and decision-support use. It does not replace
+                    official traffic-safety assessments or emergency services.
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with st.expander("Review submitted conditions"):
+            st.dataframe(
+                last_prediction["input"],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    else:
+        st.markdown(
+            """
+            <div class="surface">
+              <div class="mini-label">Ready when you are</div>
+              <div style="font-family:Manrope,sans-serif;font-size:1.15rem;font-weight:800;color:#18365e;margin-bottom:7px;">
+                Your result will appear here
+              </div>
+              <div class="result-note">
+                Complete the accident conditions above and select <b>Predict severity class</b>.
+                The model's output will be shown here, along with the submitted input values.
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+# ---------------------------------------------------------------------
+# About page
+# ---------------------------------------------------------------------
+else:
+    st.markdown(
+        '<div class="section-heading">About the project</div>',
+        unsafe_allow_html=True,
     )
+
+    st.markdown(
+        '<div class="section-subtitle">A machine-learning interface for exploring recorded road-accident severity.</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        """
+        <div class="surface">
+          <div class="mini-label">Project overview</div>
+          <h3 style="font-family:Manrope,sans-serif;color:#18365e;margin:0 0 10px 0;">
+            Turning accident conditions into a predicted severity class
+          </h3>
+          <p style="color:#5f7189;line-height:1.75;margin:0;">
+            The Smart Traffic Risk Prediction System takes structured accident information—such as
+            time, location, road conditions, weather, reported cause, and vehicles involved—and passes
+            those features to a previously trained machine-learning model. The saved label encoder is
+            used to translate the model's encoded output back into a severity class.
+          </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    card1, card2, card3 = st.columns(3, gap="medium")
+
+    with card1:
+        st.markdown(
+            """
+            <div class="info-card">
+              <h4>🧾 Input conditions</h4>
+              <p>Use prepared-dataset values to describe the recorded accident, including time, location, road, weather and vehicle details.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with card2:
+        st.markdown(
+            """
+            <div class="info-card">
+              <h4>🧠 Saved ML model</h4>
+              <p>The application loads your existing serialized model and label encoder. It does not retrain or overwrite them.</p>
+            </div>
+            """,    
+            unsafe_allow_html=True,
+        )
+
+    with card3:
+        st.markdown(
+            """
+            <div class="info-card">
+              <h4>🚦 Interpretable output</h4>
+              <p>The result is the predicted severity class. Its real-world meaning must be confirmed from the dataset's class documentation.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown(
+        "<div style='height:16px'></div>",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        """
+        <div class="surface">
+          <div class="mini-label">Important limitations</div>
+          <p style="color:#5f7189;line-height:1.75;margin:0;">
+            This application predicts a class from the fields supplied to the model. It does not
+            establish causation, provide a live traffic feed, or calculate the likelihood of a future
+            accident unless those capabilities are explicitly built and validated separately.
+            Dataset category codes should be interpreted using the original data dictionary.
+            Do not use the output as the sole basis for operational, legal, or emergency decisions.
+          </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ---------------------------------------------------------------------
+# Footer
+# ---------------------------------------------------------------------
+st.markdown(
+    """
+    <div style="border-top:1px solid #e3e9f1;margin-top:28px;padding-top:16px;color:#8190a4;font-size:.78rem;text-align:center;">
+      Smart Traffic Risk Prediction System · Educational decision-support interface
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
