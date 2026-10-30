@@ -794,6 +794,102 @@ def display_value(value):
     return str(value)
 
 
+WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+MONTH_NAMES = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
+CATEGORY_VALUE_LABELS = {
+    "Accident_Location_A": {
+        1: "Urban", 2: "Rural", 3: "Unallocated",
+    },
+    "Accident_Location_A_Chainage_km_RoadSide": {
+        1: "Left-hand side (LHS)", 2: "Right-hand side (RHS)",
+    },
+    # The source dataset names this column Causes_D, but its observed codes
+    # match the published Nature of Accident categories.
+    "Causes_D": {
+        1: "Overturning",
+        2: "Head-on collision",
+        3: "Rear-end collision",
+        4: "Brush / side-wipe collision",
+        5: "Right-turn collision",
+        6: "Skidding",
+        8: "Overtaking vehicle",
+    },
+    "Road_Feature_E": {
+        1: "Single-lane road",
+        2: "Two-lane road",
+        3: "Three or more lanes, no central divider",
+        4: "Four or more lanes with a central divider",
+    },
+    "Road_Condition_F": {
+        1: "Straight road",
+        2: "Slight curve",
+        3: "Sharp curve",
+        4: "Flat road",
+        5: "Gentle incline",
+        6: "Steep incline",
+        7: "Hump",
+        8: "Dip",
+    },
+    "Weather_Conditions_H": {
+        1: "Fine",
+        2: "Mist / fog",
+        3: "Cloudy",
+        4: "Light rain",
+        5: "Heavy rain",
+        6: "Hail / sleet",
+        7: "Snow",
+        8: "Strong wind",
+        9: "Dust storm",
+        10: "Very hot",
+        11: "Very cold",
+        12: "Other extraordinary weather",
+    },
+    "Vehicle_Type_Involved_J_V1": {
+        1: "Car / jeep / van", 2: "SUV", 3: "Bus", 4: "Mini bus",
+        5: "Truck", 6: "Two-wheeler", 7: "Three-wheeler", 8: "Cycle",
+        9: "Pedestrian", 10: "Tractor", 11: "Unknown", 12: "Animal",
+        13: "Object", 14: "Light commercial vehicle (LCV)",
+        15: "Multi-axle vehicle (MAV)",
+    },
+    "Vehicle_Type_Involved_J_V2": {
+        1: "Car / jeep / van", 2: "SUV", 3: "Bus", 4: "Mini bus",
+        5: "Truck", 6: "Two-wheeler", 7: "Three-wheeler", 8: "Cycle",
+        9: "Pedestrian", 10: "Tractor", 11: "Unknown", 12: "Animal",
+        13: "Object", 14: "Light commercial vehicle (LCV)",
+        15: "Multi-axle vehicle (MAV)",
+    },
+}
+
+
+def format_category(column, value):
+    """Display a descriptive category label but preserve the model's code."""
+    try:
+        number = float(value)
+        code = int(number) if number.is_integer() else None
+    except (TypeError, ValueError):
+        code = None
+
+    if code is not None and column == "Day_of_Week" and 1 <= code <= 7:
+        # This dataset uses 1=Monday through 7=Sunday.
+        return WEEKDAY_NAMES[code - 1]
+    if code is not None and column == "Accident_DayOfWeek" and 0 <= code <= 6:
+        return WEEKDAY_NAMES[code]
+    if code is not None and column == "Accident_Month" and 1 <= code <= 12:
+        return MONTH_NAMES[code - 1]
+    if code is not None and column == "Is_Weekend" and code in (0, 1):
+        return "Weekend" if code == 1 else "Weekday"
+    if code is not None and column == "Accident_Hour" and 0 <= code <= 23:
+        return f"{code:02d}:00"
+
+    labels = CATEGORY_VALUE_LABELS.get(column, {})
+    if code in labels:
+        return labels[code]
+    return display_value(value)
+
+
 # ---------------------------------------------------------------------
 # Load model, encoder, and prepared dataset
 # ---------------------------------------------------------------------
@@ -874,28 +970,28 @@ if selected_page == "Prediction":
 
         with time_col1:
             day_value = st.selectbox(
-                "Day of week · dataset code",
+                "Day of week",
                 option_map["Day_of_Week"],
-                format_func=display_value,
+                format_func=lambda value: format_category("Day_of_Week", value),
             )
 
             month_value = st.selectbox(
                 "Accident month",
                 option_map["Accident_Month"],
-                format_func=display_value,
+                format_func=lambda value: format_category("Accident_Month", value),
             )
 
         with time_col2:
             location_value = st.selectbox(
-                "Accident location · dataset code",
+                "Accident location",
                 option_map["Accident_Location_A"],
-                format_func=display_value,
+                format_func=lambda value: format_category("Accident_Location_A", value),
             )
 
             hour_value = st.selectbox(
-                "Accident hour",
+                "Accident time",
                 option_map["Accident_Hour"],
-                format_func=display_value,
+                format_func=lambda value: format_category("Accident_Hour", value),
             )
 
         with time_col3:
@@ -925,9 +1021,9 @@ if selected_page == "Prediction":
             )
 
         roadside_value = st.selectbox(
-            "Roadside category · dataset code",
+            "Roadside category",
             option_map["Accident_Location_A_Chainage_km_RoadSide"],
-            format_func=display_value,
+            format_func=lambda value: format_category("Accident_Location_A_Chainage_km_RoadSide", value),
         )
 
         st.markdown("---")
@@ -937,40 +1033,40 @@ if selected_page == "Prediction":
 
         with road_col1:
             cause_value = st.selectbox(
-                "Cause · dataset code",
+                "Accident type",
                 option_map["Causes_D"],
-                format_func=display_value,
+                format_func=lambda value: format_category("Causes_D", value),
             )
 
             road_feature_value = st.selectbox(
-                "Road feature · dataset code",
+                "Road feature",
                 option_map["Road_Feature_E"],
-                format_func=display_value,
+                format_func=lambda value: format_category("Road_Feature_E", value),
             )
 
             road_condition_value = st.selectbox(
-                "Road condition · dataset code",
+                "Road condition",
                 option_map["Road_Condition_F"],
-                format_func=display_value,
+                format_func=lambda value: format_category("Road_Condition_F", value),
             )
 
         with road_col2:
             weather_value = st.selectbox(
-                "Weather conditions · dataset code",
+                "Weather conditions",
                 option_map["Weather_Conditions_H"],
-                format_func=display_value,
+                format_func=lambda value: format_category("Weather_Conditions_H", value),
             )
 
             weekend_value = st.selectbox(
-                "Weekend indicator",
+                "Weekend status",
                 option_map["Is_Weekend"],
-                format_func=display_value,
+                format_func=lambda value: format_category("Is_Weekend", value),
             )
 
             day_of_week_value = st.selectbox(
-                "Accident day-of-week code",
+                "Accident day of week",
                 option_map["Accident_DayOfWeek"],
-                format_func=display_value,
+                format_func=lambda value: format_category("Accident_DayOfWeek", value),
                 help=(
                     "Selected independently to preserve the feature values "
                     "expected by the trained model."
@@ -984,18 +1080,18 @@ if selected_page == "Prediction":
 
         with vehicle_col1:
             vehicle1_value = st.selectbox(
-                "Vehicle type 1 · dataset code",
+                "Vehicle type 1",
                 option_map["Vehicle_Type_Involved_J_V1"],
-                format_func=display_value,
+                format_func=lambda value: format_category("Vehicle_Type_Involved_J_V1", value),
             )
 
         with vehicle_col2:
             vehicle2_options = option_map["Vehicle_Type_Involved_J_V2"]
 
             vehicle2_value = st.selectbox(
-                "Vehicle type 2 · dataset code",
+                "Vehicle type 2",
                 vehicle2_options,
-                format_func=display_value,
+                format_func=lambda value: format_category("Vehicle_Type_Involved_J_V2", value),
                 help="Choose a value represented in the prepared dataset.",
             )
 
