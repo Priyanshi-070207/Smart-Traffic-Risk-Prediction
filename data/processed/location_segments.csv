@@ -1,0 +1,3 @@
+Accident_Location_A,chainage_start_km,chainage_end_km,latitude,longitude,segment_name
+2,0.0,9999.0,28.373116783253124,76.80919049920799,Route_2
+1,0.0,9999.0,28.379002806219507,77.29450701085426,Route_1
