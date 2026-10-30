@@ -3,6 +3,10 @@ import pandas as pd
 import numpy as np
 import joblib
 from pathlib import Path
+import json
+import plotly.express as px
+import shap
+from scipy import sparse
 
 # ---------------------------------------------------------------------
 # Page configuration
@@ -255,12 +259,27 @@ st.markdown(
     }
     div[data-testid="stTabs"] button {
         font-weight: 700;
+    }    
+    div[data-testid="stRadio"] div[role="radiogroup"] {
+        flex-wrap: nowrap !important;
+        gap: 0.6rem !important;
+    }
+    div[data-testid="stRadio"] label {
+        white-space: nowrap !important;
     }
     div[data-testid="stAlert"] {
         border-radius: 12px;
     }
     label, .stMarkdown p {
         color: #344761;
+    }
+    [data-testid="stMetricLabel"],
+    [data-testid="stMetricLabel"] p,
+    [data-testid="stMetricValue"],
+    [data-testid="stMetricDelta"] {
+        color: #172b4d !important;
+        -webkit-text-fill-color: #172b4d !important;
+        opacity: 1 !important;
     }
 
     /* Keep widget labels and controls readable in both themes */
@@ -388,38 +407,41 @@ st.markdown(
 # ---------------------------------------------------------------------
 # Load saved artifacts and prepared dataset
 # ---------------------------------------------------------------------
-@st.cache_resource
-def load_artifacts():
-    model = joblib.load(MODEL_PATH)
-    encoder = joblib.load(ENCODER_PATH)
-    return model, encoder
 
+def explain_one_prediction(model_pipeline, prediction_input, class_index):
+    preprocessor = model_pipeline.named_steps["preprocessor"]
+    classifier = model_pipeline.steps[-1][1]
+    
+    transformed = preprocessor.transform(prediction_input)
+    if sparse.issparse(transformed):
+        transformed = transformed.toarray()
 
-@st.cache_data
-def load_prepared_dataset(path_string):
-    return pd.read_csv(path_string)
+    feature_names = preprocessor.get_feature_names_out()
+    explainer = shap.TreeExplainer(classifier)
+    values = explainer.shap_values(
+        transformed,
+        check_additivity=False,
+    )
 
+    if isinstance(values, list):
+        contributions = np.asarray(values[class_index])[0]
+    else:
+        values = np.asarray(values)
+        if values.ndim == 3:
+            contributions = values[0, :, class_index]
+        elif values.ndim == 2:
+            contributions = values[0]
+        else:
+            raise ValueError(f"Unexpected SHAP output shape: {values.shape}")
 
-def available_values(dataframe, column):
-    """Return sorted non-null dataset values, preserving their stored types."""
-    if column not in dataframe.columns:
-        raise KeyError(f"Required column '{column}' is missing from the prepared dataset.")
-    values = dataframe[column].dropna().unique().tolist()
-    try:
-        return sorted(values)
-    except TypeError:
-        return sorted(values, key=lambda value: str(value))
-
-
-def median_or_default(series, default=0):
-    values = pd.to_numeric(series, errors="coerce").dropna()
-    return float(values.median()) if not values.empty else float(default)
-
-
-def display_value(value):
-    if isinstance(value, (float, np.floating)) and float(value).is_integer():
-        return str(int(value))
-    return str(value)
+    return (
+        pd.DataFrame({
+            "feature": feature_names,
+            "contribution": contributions,
+        })
+        .assign(abs_contribution=lambda frame: frame["contribution"].abs())
+        .nlargest(8, "abs_contribution")
+    )
 
 # ---------------------------------------------------------------------
 # Top navigation
@@ -427,7 +449,11 @@ def display_value(value):
 if "active_page" not in st.session_state:
     st.session_state.active_page = "Prediction"
 
-nav_left, nav_right = st.columns([1.35, 1], vertical_alignment="center", gap="large")
+nav_left, nav_right = st.columns(
+    [1, 1.7],
+    vertical_alignment="center",
+    gap="small",
+)
 
 with nav_left:
     st.markdown(
@@ -439,12 +465,16 @@ with nav_left:
     )
 
 with nav_right:
-    page_col, theme_col = st.columns([2.2, 1], vertical_alignment="center", gap="small")
+    page_col, theme_col = st.columns(
+        [4.5, 1],
+        vertical_alignment="center",
+        gap="small",
+    )
 
     with page_col:
         selected_page = st.radio(
             "Main navigation",
-            ["Prediction", "About the project"],
+            ["Prediction", "Analytics","About the project"],
             horizontal=True,
             label_visibility="collapsed",
             key="top_navigation",
@@ -487,7 +517,7 @@ if dark_mode:
         background:#1b2d49 !important;
         border:1px solid #5275a8 !important;
         border-radius:14px !important;
-        padding:9px 14px !important;
+        padding:10px 14px !important;
         box-shadow:0 5px 16px rgba(0,0,0,.28) !important;
         min-width:150px !important;
     }
@@ -594,6 +624,15 @@ if dark_mode:
 
     [data-baseweb="popover"] [role="option"]:hover {
         background:#243752 !important;
+    }
+    
+    [data-testid="stMetricLabel"],
+    [data-testid="stMetricLabel"] p,
+    [data-testid="stMetricValue"],
+    [data-testid="stMetricDelta"] {
+        color: #f3f7ff !important;
+        -webkit-text-fill-color: #f3f7ff !important;
+        opacity: 1 !important;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -1013,6 +1052,12 @@ if selected_page == "Prediction":
                 raise ValueError("The model returned no prediction.")
 
             encoded_prediction = int(raw_prediction[0])
+            
+            explanation = explain_one_prediction(
+                model,
+                prediction_input,
+                encoded_prediction,
+            )
 
             severity_prediction = label_encoder.inverse_transform(
                 np.asarray([encoded_prediction], dtype=int)
@@ -1021,6 +1066,7 @@ if selected_page == "Prediction":
             st.session_state["last_prediction"] = {
                 "severity": severity_prediction,
                 "input": input_data.copy(),
+                "explanation": explanation,
             }
 
         except Exception as error:
@@ -1077,6 +1123,30 @@ if selected_page == "Prediction":
                 """,
                 unsafe_allow_html=True,
             )
+            
+        explanation = last_prediction.get("explanation")
+
+        if explanation is not None and not explanation.empty:
+            st.markdown("#### Factors influencing this prediction")
+            st.caption(
+                "Positive SHAP values support the predicted class; negative values "
+                "push away from it. These are model contributions, not proof of causation."
+            )
+            
+            explanation_chart = explanation.sort_values("contribution")
+            fig = px.bar(
+                explanation_chart,
+                x="contribution",
+                y="feature",
+                orientation="h",
+                color="contribution",
+                color_continuous_scale=["#d95f59", "#d9e2f0", "#2463eb"],
+                labels={
+                    "contribution": "SHAP contribution to model score",
+                    "feature": "Encoded model feature",
+                },
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
         with st.expander("Review submitted conditions"):
             st.dataframe(
@@ -1102,10 +1172,149 @@ if selected_page == "Prediction":
             unsafe_allow_html=True,
         )
 
+# ---------------------------------------------------------------------
+# Analytics page
+# ---------------------------------------------------------------------
+
+elif selected_page == "Analytics":
+    st.markdown(
+        '<div class="section-heading">Model performance and accident patterns</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="section-subtitle">Held-out model results and summaries of recorded accidents.</div>',
+        unsafe_allow_html=True,
+    )
+    
+    metrics_path = BASE_DIR / "models" / "model_metrics.json"
+    importance_path = BASE_DIR / "models" / "feature_importance.csv"
+    
+    if metrics_path.exists():
+        with open(metrics_path, "r", encoding="utf-8") as file:
+            metrics = json.load(file)
+        
+        metric_col1, metric_col2 = st.columns(2)
+        metric_col1.metric("Test accuracy", f"{metrics['accuracy']:.1%}")
+        metric_col2.metric("Macro F1", f"{metrics['macro_f1']:.3f}")
+        
+        class_report = metrics["classification_report"]
+        class_rows = []
+        
+        for class_name in metrics["classes"]:
+            result = class_report.get(class_name, {})
+            class_rows.append({
+                "Severity class": class_name,
+                "Precision": result.get("precision", 0),
+                "Recall": result.get("recall", 0),
+                "F1 score": result.get("f1-score", 0),
+                "Test rows": result.get("support", 0),
+            })
+            
+        st.markdown("#### Scores by severity class")
+        st.dataframe(
+            pd.DataFrame(class_rows).style.format({
+                "Precision": "{:.3f}",
+                "Recall": "{:.3f}",
+                "F1 score": "{:.3f}",
+                "Test rows": "{:.0f}",
+            }),
+            use_container_width=True,
+            hide_index=True,
+        )
+        
+        st.markdown("#### Confusion matrix")
+        confusion = pd.DataFrame(
+            metrics["confusion_matrix"],
+            index=metrics["classes"],
+            columns=metrics["classes"],
+        )
+        st.dataframe(confusion, use_container_width=True)
+        
+    else:
+        st.info(
+            "Run the metrics cell in 03_model_training.ipynb first. "
+            "It creates models/model_metrics.json."
+        )
+        
+    if importance_path.exists():
+        importance = pd.read_csv(importance_path).head(15).sort_values(
+            "mean_abs_shap"
+        )
+        st.markdown("#### Global SHAP feature importance")
+        st.caption(
+            "This chart summarizes which encoded input features most influenced "
+            "the model across the sampled test records."
+        )
+        fig = px.bar(
+            importance,
+            x="mean_abs_shap",
+            y="feature",
+            orientation="h",
+            labels={
+                "mean_abs_shap": "Mean absolute SHAP value",
+                "feature": "Encoded model feature",
+            },
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    
+    else:
+        st.info(
+            "Run the SHAP cell in 03_model_training.ipynb first. "
+            "It creates models/feature_importance.csv."
+        )
+    st.markdown("#### Recorded accidents by severity class")
+    severity_counts = (
+        df_options["Accident_Severity_C"]
+        .value_counts()
+        .sort_index()
+        .rename_axis("Severity class")
+        .reset_index(name="Recorded accidents")
+    )
+    fig = px.bar(
+        severity_counts,
+        x="Severity class",
+        y="Recorded accidents",
+        labels={"Severity class": "Dataset severity code"},
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    chart_col1, chart_col2 = st.columns(2)
+    
+    with chart_col1:
+        monthly_counts = (
+            df_options.groupby("Accident_Month")
+            .size()
+            .reset_index(name="Recorded accidents")
+        )
+        fig = px.bar(
+            monthly_counts,
+            x="Accident_Month",
+            y="Recorded accidents",
+            labels={"Accident_Month": "Month"},
+        )
+        st.markdown("#### Recorded accidents by month")
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with chart_col2:
+        weather_counts = (
+            df_options["Weather_Conditions_H"]
+            .value_counts()
+            .sort_index()
+            .rename_axis("Weather code")
+            .reset_index(name="Recorded accidents")
+        )
+        fig = px.bar(
+            weather_counts,
+            x="Weather code",
+            y="Recorded accidents",
+        )
+        st.markdown("#### Recorded accidents by weather code")
+        st.plotly_chart(fig, use_container_width=True)
 
 # ---------------------------------------------------------------------
 # About page
 # ---------------------------------------------------------------------
+
 else:
     st.markdown(
         '<div class="section-heading">About the project</div>',
