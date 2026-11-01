@@ -1,34 +1,28 @@
-import pandas as pd
-import numpy as np
+"""Create a template for real accident-segment coordinates.
+
+The accident dataset does not include GPS coordinates. This script deliberately
+never invents latitude/longitude values. Use coordinates from a verified route
+GIS file or an authoritative map/source.
+"""
 from pathlib import Path
+import pandas as pd
 
-# Setup paths using 'data' to match your folder structure
 BASE_DIR = Path(__file__).resolve().parent
-DATA_PATH = BASE_DIR / "data" / "processed" / "accident_data_prepared.csv"
-OUTPUT_PATH = BASE_DIR / "data" / "processed" / "location_segments.csv"
+PROCESSED_DIR = BASE_DIR / "data" / "processed"
+DATA_PATH = PROCESSED_DIR / "accident_data_prepared.csv"
+TEMPLATE_PATH = PROCESSED_DIR / "location_segments_template.csv"
+COLUMNS = [
+    "Accident_Location_A", "chainage_start_km", "chainage_end_km",
+    "latitude", "longitude", "segment_name",
+]
 
-print(f"Reading data from: {DATA_PATH}")
+if not DATA_PATH.exists():
+    raise FileNotFoundError(f"Prepared data file not found: {DATA_PATH}")
 
-try:
-    df = pd.read_csv(DATA_PATH)
-    locations = df['Accident_Location_A'].dropna().unique()
-
-    # Generate coordinates centered near Delhi (or your preferred base location)
-    mock_data = []
-    for loc in locations:
-        mock_data.append({
-            "Accident_Location_A": loc,
-            "chainage_start_km": 0.0,
-            "chainage_end_km": 9999.0, 
-            "latitude": 28.6139 + np.random.uniform(-0.5, 0.5),
-            "longitude": 77.2090 + np.random.uniform(-0.5, 0.5),
-            "segment_name": f"Route_{int(loc)}"
-        })
-
-    # Save to the expected location
-    segments_df = pd.DataFrame(mock_data)
-    segments_df.to_csv(OUTPUT_PATH, index=False)
-    print(f"✅ Successfully generated {len(segments_df)} coordinate mappings at {OUTPUT_PATH}")
-    
-except Exception as e:
-    print(f"❌ Error: {e}")
+PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+pd.DataFrame(columns=COLUMNS).to_csv(TEMPLATE_PATH, index=False)
+print(f"Created a blank template: {TEMPLATE_PATH}")
+print("Fill it with one row per real road segment, then save as location_segments.csv.")
+print("Required fields: location category code, start/end chainage (km), real latitude/longitude, segment name.")
+print("Important: Accident_Location_A is a category such as urban/rural, not a route ID.")
+print("If routes overlap in chainage, the source data needs a highway/route identifier to map uniquely.")
