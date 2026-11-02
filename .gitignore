@@ -6,4 +6,4 @@ venv/
 .env
 .env.*
 .vscode/
-dataa/raw/*
+data/raw/*
