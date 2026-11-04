@@ -9,6 +9,8 @@ import plotly.graph_objects as go
 import shap
 from scipy import sparse
 import requests
+import folium
+from streamlit_folium import st_folium
 
 # ---------------------------------------------------------------------
 # Page configuration
@@ -437,7 +439,7 @@ def explain_one_prediction(model_pipeline, prediction_input, class_index):
 
     return (
         pd.DataFrame({
-            "feature": [format_shap_feature_name(f) for f in feature_names],
+            "feature": feature_names,
             "contribution": contributions,
         })
         .assign(abs_contribution=lambda frame: frame["contribution"].abs())
@@ -771,41 +773,6 @@ def format_category(column, value):
         return labels[code]
     return display_value(value)
 
-FEATURE_DISPLAY_NAMES = {
-    "Day_of_Week": "Day of Week",
-    "Accident_Location_A": "Location",
-    "Accident_Location_A_Chainage_km_RoadSide": "Roadside",
-    "Causes_D": "Accident Type",
-    "Road_Feature_E": "Road Feature",
-    "Road_Condition_F": "Road Condition",
-    "Weather_Conditions_H": "Weather",
-    "Vehicle_Type_Involved_J_V1": "Vehicle 1",
-    "Vehicle_Type_Involved_J_V2": "Vehicle 2",
-    "Accident_Month": "Month",
-    "Accident_DayOfWeek": "Day Code",
-    "Accident_Hour": "Hour",
-    "Is_Weekend": "Weekend Status",
-    "Accident_Location_A_Chainage_km": "Chainage (km)",
-    "Accident_Year": "Year",
-}
-
-def format_shap_feature_name(raw_name):
-    """Convert ColumnTransformer feature names into human-readable labels."""
-    clean = str(raw_name)
-    if clean.startswith("numerical__"):
-        col = clean.replace("numerical__", "")
-        return FEATURE_DISPLAY_NAMES.get(col, col)
-    if clean.startswith("categorical__"):
-        rest = clean.replace("categorical__", "")
-        for col in sorted(categorical_features, key=len, reverse=True):
-            prefix = col + "_"
-            if rest.startswith(prefix):
-                val = rest[len(prefix):]
-                friendly_col = FEATURE_DISPLAY_NAMES.get(col, col)
-                friendly_val = format_category(col, val)
-                return f"{friendly_col}: {friendly_val}"
-    return clean
-
 @st.cache_data
 def load_location_segments(path_string):
     segments = pd.read_csv(path_string)
@@ -826,53 +793,64 @@ def find_location_segment(segments, location_code, chainage_km):
             matches = route[route["chainage_end_km"] == final_end]
     return matches.iloc[0] if not matches.empty else None
 
-@st.cache_data
-def build_mapped_accidents(df_records, segments):
-    map_rows = []
-    for row in df_records[["Accident_Location_A", "Accident_Location_A_Chainage_km", "Accident_Severity_C"]].itertuples(index=False):
-        segment = find_location_segment(segments, row.Accident_Location_A, row.Accident_Location_A_Chainage_km)
-        if segment is not None:
-            map_rows.append({
-                "segment_name": segment["segment_name"],
-                "latitude": segment["latitude"],
-                "longitude": segment["longitude"],
-                "severity": row.Accident_Severity_C,
-            })
-    return pd.DataFrame(map_rows)
+
+def has_placeholder_coordinates(segments):
+    """Detect the random near-Delhi coordinates made by the previous script."""
+    if segments.empty or "segment_name" not in segments.columns:
+        return False
+    names = segments["segment_name"].astype(str)
+    lat = pd.to_numeric(segments["latitude"], errors="coerce")
+    lon = pd.to_numeric(segments["longitude"], errors="coerce")
+    return bool(
+        names.str.match(r"^Route_\d+$").all()
+        and lat.between(28.10, 29.13).all()
+        and lon.between(76.70, 77.72).all()
+    )
+
+
+@st.cache_data(show_spinner="Preparing dashboard map…")
+def build_mapped_accidents(accident_data, segments):
+    """Map all accidents to segments in one cached, vectorized join."""
+    accidents = accident_data[[
+        "Accident_Location_A",
+        "Accident_Location_A_Chainage_km",
+        "Accident_Severity_C",
+    ]].copy()
+    for column in accidents.columns:
+        accidents[column] = pd.to_numeric(accidents[column], errors="coerce")
+    segments = segments.copy()
+    candidates = accidents.merge(segments, on="Accident_Location_A", how="inner")
+    chainage = candidates["Accident_Location_A_Chainage_km"]
+    in_segment = (
+        (chainage >= candidates["chainage_start_km"])
+        & (chainage < candidates["chainage_end_km"])
+    )
+    final_end = candidates.groupby("Accident_Location_A")["chainage_end_km"].transform("max")
+    at_final_end = np.isclose(chainage, final_end) & (candidates["chainage_end_km"] == final_end)
+    matched = candidates[in_segment | at_final_end].copy()
+    matched = matched.dropna(subset=["latitude", "longitude", "segment_name", "Accident_Severity_C"])
+    return matched.rename(columns={
+        "Accident_Severity_C": "severity",
+        "Accident_Location_A_Chainage_km": "chainage_km",
+    })[[
+        "Accident_Location_A", "chainage_km", "segment_name",
+        "latitude", "longitude", "severity",
+    ]]
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_current_weather(latitude, longitude):
-    try:
-        response = requests.get(
-            "https://api.open-meteo.com/v1/forecast",
-            params={
-                "latitude": float(latitude), "longitude": float(longitude),
-                "current": "temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m",
-                "timezone": "auto",
-            },
-            timeout=5,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        return payload["current"], payload.get("current_units", {})
-    except Exception:
-        # Fallback mock weather if offline or network blocks Open-Meteo
-        fallback_current = {
-            "temperature_2m": 24.5,
-            "relative_humidity_2m": 60,
-            "precipitation": 0.0,
-            "weather_code": 1,  # Mainly clear
-            "wind_speed_10m": 12.0,
-            "time": "offline-fallback"
-        }
-        fallback_units = {
-            "temperature_2m": "°C",
-            "relative_humidity_2m": "%",
-            "precipitation": "mm",
-            "wind_speed_10m": "km/h",
-            "timezone": "local time"
-        }
-        return fallback_current, fallback_units
+    response = requests.get(
+        "https://api.open-meteo.com/v1/forecast",
+        params={
+            "latitude": float(latitude), "longitude": float(longitude),
+            "current": "temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m",
+            "timezone": "auto",
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    return payload["current"], payload.get("current_units", {})
 
 def describe_wmo_weather(code):
     descriptions = {
@@ -882,24 +860,17 @@ def describe_wmo_weather(code):
     }
     return descriptions.get(int(code), f"Weather code {code}")
 
-def map_wmo_to_dataset(wmo_code, temp_c=None, wind_kmh=None):
-    """Maps Open-Meteo WMO codes, temperature, and wind speed to Weather_Conditions_H codes."""
+def map_wmo_to_dataset(wmo_code):
+    """Maps Open-Meteo WMO codes to the dataset's Weather_Conditions_H codes."""
     wmo = int(wmo_code)
-    if wmo in [45, 48]: return "2"                  # Mist / fog
-    elif wmo in [51, 53, 55, 61]: return "4"        # Light rain
-    elif wmo in [63, 65, 80, 81, 82]: return "5"    # Heavy rain
-    elif wmo in [95, 96, 99]: return "6"            # Hail / sleet / thunderstorm
-    elif wmo in [66, 67, 71, 73, 75, 77, 85, 86]: return "7"  # Snow
-
-    if wind_kmh is not None and float(wind_kmh) >= 40.0:
-        return "8"                                  # Strong wind
-    if temp_c is not None and float(temp_c) >= 40.0:
-        return "10"                                 # Very hot
-    if temp_c is not None and float(temp_c) <= 5.0:
-        return "11"                                 # Very cold
-
-    if wmo in [2, 3]: return "3"                    # Cloudy
-    return "1"                                      # Fine / Clear
+    if wmo in [0, 1]: return "1"         # Fine / Clear
+    elif wmo in [45, 48]: return "2"     # Mist / Fog
+    elif wmo in [2, 3]: return "3"       # Cloudy
+    elif wmo in [51, 53, 55, 61]: return "4" # Light rain
+    elif wmo in [63, 65, 80, 81, 82]: return "5" # Heavy rain
+    elif wmo in [66, 67, 71, 73, 75, 77, 85, 86]: return "7" # Snow
+    elif wmo in [95, 96, 99]: return "6" # Hail / Thunderstorm
+    return "1" # Default to Fine
 
 # ---------------------------------------------------------------------
 # Load model, encoder, and prepared dataset
@@ -1183,13 +1154,174 @@ elif selected_page == "Dashboard":
     
     st.markdown('<div class="section-heading">Traffic Management Dashboard</div>', unsafe_allow_html=True)
     
+    st.subheader("Add a road segment")
+    st.caption(
+        "Click the map to set a representative coordinate for a segment. "
+        "Then enter its category, chainage range, and name."
+    )
+    
+    # Set up picker state before creating the widgets.
+    if "segment_latitude" not in st.session_state:
+        st.session_state["segment_latitude"] = 22.5
+    if "segment_longitude" not in st.session_state:
+        st.session_state["segment_longitude"] = 79.0
+    if "segment_map_click" not in st.session_state:
+        st.session_state["segment_map_click"] = None
+    if "segment_has_map_click" not in st.session_state:
+        st.session_state["segment_has_map_click"] = False
+        
+    picker_map_col, picker_help_col = st.columns([1.4, 1], gap="medium")
+
+    with picker_map_col:
+        picker_map = folium.Map(location=[22.5, 79.0], zoom_start=5)
+        map_event = st_folium(
+            picker_map,
+            height=300,
+            use_container_width=True,
+            returned_objects=["last_clicked"],
+            key="add_segment_map",
+        )
+
+    with picker_help_col:
+        st.info(
+            "Click the verified road segment. The pin name and coordinates "
+            "will fill automatically. Enter the segment's real chainage range."
+        )
+    
+    clicked = map_event.get("last_clicked") if map_event else None
+
+    # Update coordinates only when the user makes a new click.
+    if clicked:
+        click_pair = (float(clicked["lat"]), float(clicked["lng"]))
+        if click_pair != st.session_state["segment_map_click"]:
+            st.session_state["segment_latitude"] = click_pair[0]
+            st.session_state["segment_longitude"] = click_pair[1]
+            st.session_state["new_segment_name"] = (
+                f"Map pin {click_pair[0]:.5f}, {click_pair[1]:.5f}"
+            )
+            st.session_state["segment_map_click"] = click_pair
+            st.session_state["segment_has_map_click"] = True
+
+    left, right = st.columns(2)
+    
+    with left:
+        location_code = st.selectbox(
+            "Location category",
+            options=option_map["Accident_Location_A"],
+            format_func=lambda value: format_category(
+                "Accident_Location_A", value
+            ),
+            key="new_segment_location_code",
+        )
+        chainage_start = st.number_input(
+            "Segment start chainage (km)",
+            min_value=0.0,
+            step=0.1,
+            key="new_segment_start_km",
+        )
+        latitude = st.number_input(
+            "Latitude",
+            min_value=-90.0,
+            max_value=90.0,
+            format="%.6f",
+            key="segment_latitude",
+        )
+        
+    with right:
+        segment_name = st.text_input(
+            "Segment name",
+            placeholder="Enter a verified route/segment name",
+            key="new_segment_name",
+        )
+        chainage_end = st.number_input(
+            "Segment end chainage (km)",
+            min_value=0.0,
+            step=0.1,
+            key="new_segment_end_km",
+        )
+        longitude = st.number_input(
+            "Longitude",
+            min_value=-180.0,
+            max_value=180.0,
+            format="%.6f",
+            key="segment_longitude",
+        )
+        
+    if st.button("Save segment to CSV", type="primary"):
+        if not st.session_state["segment_has_map_click"]:
+            st.error("Click the map to choose a coordinate first.")
+        elif chainage_end <= chainage_start:
+            st.error("The end chainage must be greater than the start chainage.")
+        elif not segment_name.strip():
+            st.error("Enter a segment name.")
+        else:
+            columns = [
+                "Accident_Location_A",
+                "chainage_start_km",
+                "chainage_end_km",
+                "latitude",
+                "longitude",
+                "segment_name",
+            ]
+            
+            if LOCATION_PATH.exists() and LOCATION_PATH.stat().st_size > 0:
+                existing = pd.read_csv(LOCATION_PATH)
+            else:
+                existing = pd.DataFrame(columns=columns)
+
+            new_row = {
+                "Accident_Location_A": location_code,
+                "chainage_start_km": chainage_start,
+                "chainage_end_km": chainage_end,
+                "latitude": latitude,
+                "longitude": longitude,
+                "segment_name": segment_name.strip(),
+            }
+
+            LOCATION_PATH.parent.mkdir(parents=True, exist_ok=True)
+            updated = pd.concat(
+                [existing, pd.DataFrame([new_row])],
+                ignore_index=True,
+            )
+            updated.to_csv(LOCATION_PATH, index=False)
+
+            # Clear cached CSV reads so the dashboard reloads the new row.
+            st.cache_data.clear()
+            st.session_state["weather_segment_select"] = segment_name.strip()
+            st.success(f"Saved {segment_name.strip()} to location_segments.csv.")
+            st.rerun()
+    
     if not LOCATION_PATH.exists():
         st.error(f"Location mapping file missing: {LOCATION_PATH}. Run the generate_coordinates.py script first.")
         st.stop()
 
-    # Load locations and map accidents using the cached helper
+    # Load verified coordinates and build the cached map tables.
     location_segments = load_location_segments(str(LOCATION_PATH))
-    mapped_accidents = build_mapped_accidents(df_options, location_segments)
+    placeholder_coordinates = has_placeholder_coordinates(location_segments)
+    if placeholder_coordinates:
+        st.warning(
+            "location_segments.csv contains randomly generated demo points near Delhi. "
+            "They are not actual accident locations, so map selection and live weather are paused. "
+            "Replace these rows with verified route GPS coordinates."
+        )
+        mapped_accidents = pd.DataFrame(columns=[
+            "Accident_Location_A", "chainage_km", "segment_name",
+            "latitude", "longitude", "severity",
+        ])
+        map_summary = pd.DataFrame()
+    else:
+        mapped_accidents = build_mapped_accidents(df_options, location_segments)
+        if not mapped_accidents.empty:
+            map_summary = mapped_accidents.groupby(
+                ["segment_name", "latitude", "longitude", "Accident_Location_A"],
+                as_index=False,
+            ).agg(
+                accident_count=("severity", "size"),
+                avg_severity_risk=("severity", "mean"),
+                median_chainage_km=("chainage_km", "median"),
+            )
+        else:
+            map_summary = pd.DataFrame()
 
     # --- TOP ROW: KPIs ---
     kpi1, kpi2, kpi3, kpi4 = st.columns(4)
@@ -1201,7 +1333,7 @@ elif selected_page == "Dashboard":
     with kpi3:
         st.metric("Active Segments", f"{mapped_accidents['segment_name'].nunique() if not mapped_accidents.empty else 0}", "Monitored")
     with kpi4:
-        st.metric("Live API Status", "Online", "Open-Meteo")
+        st.metric("Weather service", "Ready" if not placeholder_coordinates else "Needs GPS", "Open-Meteo")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -1211,13 +1343,12 @@ elif selected_page == "Dashboard":
     with map_col:
         st.markdown('<div class="dashboard-panel"><div class="dashboard-header">Live Predictive Map</div>', unsafe_allow_html=True)
         
-        if not mapped_accidents.empty:
-            mapped_accidents["severity"] = pd.to_numeric(mapped_accidents["severity"], errors="coerce")
-            map_summary = mapped_accidents.groupby(["segment_name", "latitude", "longitude"], as_index=False).agg(
-                accident_count=("severity", "size"),
-                avg_severity_risk=("severity", "mean")
-            )
-            
+        if placeholder_coordinates:
+            st.info("Add verified GPS coordinates to enable map selection.")
+        elif map_summary.empty:
+            st.info("No accident rows match the verified location segments yet.")
+        else:
+            map_theme = "carto-darkmatter" if dark_mode else "carto-positron"
             fig_map = px.scatter_map(
                 map_summary,
                 lat="latitude",
@@ -1225,38 +1356,92 @@ elif selected_page == "Dashboard":
                 size="accident_count",
                 color="avg_severity_risk",
                 hover_name="segment_name",
+                hover_data={
+                    "accident_count": True,
+                    "avg_severity_risk": ":.2f",
+                    "latitude": ":.5f",
+                    "longitude": ":.5f",
+                    "Accident_Location_A": False,
+                    "median_chainage_km": False,
+                },
+                custom_data=["segment_name", "Accident_Location_A", "median_chainage_km"],
                 color_continuous_scale=px.colors.sequential.YlOrRd,
                 size_max=45,
                 zoom=9,
-                center={"lat": map_summary["latitude"].mean(), "lon": map_summary["longitude"].mean()},
-                map_style="open-street-map"
+                center={
+                    "lat": map_summary["latitude"].mean(),
+                    "lon": map_summary["longitude"].mean(),
+                },
+                map_style=map_theme,
             )
-            
             fig_map.update_layout(
-                height=450,
+                height=350,
                 margin=dict(l=0, r=0, t=0, b=0),
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
-                coloraxis_showscale=False
+                coloraxis_showscale=False,
+                clickmode="event+select",
             )
-            st.plotly_chart(fig_map, use_container_width=True)
-            
+            map_event = st.plotly_chart(
+                fig_map,
+                use_container_width=True,
+                key="dashboard_location_map",
+                on_select="rerun",
+                selection_mode="points",
+                config={"scrollZoom": True},
+            )
+            selected_points = map_event.get("selection", {}).get("points", [])
+            if selected_points:
+                custom = selected_points[-1].get("customdata", [])
+                if custom:
+                    selected_name = str(custom[0])
+                    if selected_name in map_summary["segment_name"].astype(str).tolist():
+                        st.session_state["weather_segment_select"] = selected_name
+            st.caption("Click a marker to select that segment for live weather.")
+
         st.markdown('</div>', unsafe_allow_html=True)
         
     with side_col:
         st.markdown('<div class="dashboard-panel"><div class="dashboard-header">Live Weather Prediction</div>', unsafe_allow_html=True)
         
-        loc_options = available_values(df_options, "Accident_Location_A")
-        selected_weather_loc = st.selectbox("Select Segment", loc_options, format_func=lambda value: format_category("Accident_Location_A", value), label_visibility="collapsed")
-        
-        selected_route = df_options[pd.to_numeric(df_options["Accident_Location_A"], errors="coerce") == float(selected_weather_loc)]
-        
-        if not selected_route.empty:
-            route_chainage = pd.to_numeric(selected_route["Accident_Location_A_Chainage_km"], errors="coerce").dropna()
-            selected_chainage = float(route_chainage.median())
-            weather_segment = find_location_segment(location_segments, selected_weather_loc, selected_chainage)
+        if placeholder_coordinates:
+            st.info("Live weather is paused until the demo coordinates are replaced with verified GPS coordinates.")
+        elif map_summary.empty:
+            st.info("No selectable verified map segments are available.")
+        else:
+            segment_options = map_summary["segment_name"].astype(str).tolist()
+            if st.session_state.get("weather_segment_select") not in segment_options:
+                st.session_state["weather_segment_select"] = segment_options[0]
 
-            if weather_segment is not None and st.button("Predict Live Risk", type="primary", use_container_width=True):
+            selected_segment_name = st.selectbox(
+                "Selected map segment",
+                options=segment_options,
+                key="weather_segment_select",
+                help="Click a map marker or choose a segment from this list.",
+            )
+            selected_map_row = map_summary.loc[
+                map_summary["segment_name"].astype(str) == selected_segment_name
+            ].iloc[0]
+            selected_weather_loc = float(selected_map_row["Accident_Location_A"])
+            selected_chainage = float(selected_map_row["median_chainage_km"])
+            weather_segment = location_segments.loc[
+                location_segments["segment_name"].astype(str) == selected_segment_name
+            ].iloc[0]
+            route_location = pd.to_numeric(
+                df_options["Accident_Location_A"], errors="coerce"
+            )
+            route_chainage = pd.to_numeric(
+                df_options["Accident_Location_A_Chainage_km"], errors="coerce"
+            )
+            selected_route = df_options[
+                (route_location == selected_weather_loc)
+                & (route_chainage >= float(weather_segment["chainage_start_km"]))
+                & (route_chainage <= float(weather_segment["chainage_end_km"]))
+            ]
+
+            if not selected_route.empty and st.button(
+                "Predict Live Risk", type="primary", use_container_width=True
+            ):
                 try:
                     # 1. Fetch Live Weather
                     current, units = fetch_current_weather(weather_segment["latitude"], weather_segment["longitude"])
@@ -1271,13 +1456,10 @@ elif selected_page == "Dashboard":
                     """, unsafe_allow_html=True)
                     
                     # 2. Build Live Data for Model
-                    dataset_weather_code = map_wmo_to_dataset(
-                        current["weather_code"],
-                        current.get("temperature_2m"),
-                        current.get("wind_speed_10m"),
-                    )
+                    dataset_weather_code = map_wmo_to_dataset(current['weather_code'])
                     now = pd.Timestamp.now()
                     
+                    # Helper to get the most common historical road condition for this location
                     def safe_mode(col, default="1"):
                         modes = selected_route[col].mode()
                         return str(modes.iloc[0]) if not modes.empty else str(default)
@@ -1289,7 +1471,7 @@ elif selected_page == "Dashboard":
                         "Causes_D": safe_mode("Causes_D"),
                         "Road_Feature_E": safe_mode("Road_Feature_E"),
                         "Road_Condition_F": safe_mode("Road_Condition_F"),
-                        "Weather_Conditions_H": dataset_weather_code,
+                        "Weather_Conditions_H": dataset_weather_code, # <-- Injected Live Weather
                         "Vehicle_Type_Involved_J_V1": safe_mode("Vehicle_Type_Involved_J_V1"),
                         "Vehicle_Type_Involved_J_V2": safe_mode("Vehicle_Type_Involved_J_V2"),
                         "Accident_Month": str(now.month),
@@ -1307,30 +1489,77 @@ elif selected_page == "Dashboard":
                     live_pred_raw = np.asarray(model.predict(live_input)).reshape(-1)
                     live_severity = label_encoder.inverse_transform([int(live_pred_raw[0])])[0]
 
-                    live_probs = model.predict_proba(live_input)[0]
-                    confidence = float(np.max(live_probs)) * 100
-                    st.success(f"**🚨 Live Predicted Severity:** Class {display_value(live_severity)} ({confidence:.1f}% confidence)")
+                    st.success(f"**🚨 Live Predicted Severity:** {display_value(live_severity)}")
                     
                 except Exception as e:
                     st.error(f"Prediction Error: {e}")
-        else:
-            st.warning("No data found for this segment.")
-            
         st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
+    
+    chart_text_color = "#BFCADB" if dark_mode else "#000000"
+    chart_grid_color = "#475569" if dark_mode else "#D1D5DB"
+    chart_template = "plotly_dark" if dark_mode else "plotly_white"
 
     # --- BOTTOM ROW: Charts ---
     bot1, bot2 = st.columns([1, 1])
     
     with bot1:
-        st.markdown('<div class="dashboard-panel"><div class="dashboard-header">Historical Severity Distribution</div>', unsafe_allow_html=True)
-        if not mapped_accidents.empty:
-            sev_counts = mapped_accidents['severity'].value_counts().reset_index()
-            sev_counts.columns = ['Severity', 'Count']
-            fig_bar = px.bar(sev_counts, x='Severity', y='Count', color='Severity', color_continuous_scale="RdYlGn_r")
-            fig_bar.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=250, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", showlegend=False)
-            st.plotly_chart(fig_bar, use_container_width=True)
+        st.markdown(
+            '<div class="dashboard-panel"><div class="dashboard-header">Historical Severity Distribution · all dataset records</div>',
+            unsafe_allow_html=True,
+        )
+        # Severity is a categorical class, so use named categories on a discrete x-axis.
+        severity_names = {
+            1: "Fatal",
+            2: "Grievous injury",
+            3: "Minor injury",
+            4: "No injury",
+        }
+        severity_counts = (
+            pd.to_numeric(df_options["Accident_Severity_C"], errors="coerce")
+            .value_counts()
+            .sort_index()
+            .rename_axis("Severity code")
+            .reset_index(name="Accident count")
+        )
+        severity_counts["Severity"] = severity_counts["Severity code"].map(
+            lambda value: severity_names.get(int(value), f"Class {value}")
+        )
+        severity_order = ["Fatal", "Grievous injury", "Minor injury", "No injury"]
+        fig_bar = px.bar(
+            severity_counts,
+            x="Severity",
+            y="Accident count",
+            color="Severity",
+            category_orders={"Severity": severity_order},
+            color_discrete_sequence=["#c0392b", "#e67e22", "#f1c40f", "#27ae60"],
+        )
+        fig_bar.update_layout(
+            template=chart_template,
+            font=dict(color=chart_text_color, family="DM Sans", size=13),
+            margin=dict(l=0, r=0, t=10, b=0),
+            height=300,
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            showlegend=False,
+            xaxis_title="Accident severity",
+            yaxis_title="Number of records",
+        )
+        fig_bar.update_xaxes(
+            title_font_color=chart_text_color,
+            tickfont_color=chart_text_color,
+            gridcolor=chart_grid_color,
+        )
+        fig_bar.update_yaxes(
+            title_font_color=chart_text_color,
+            tickfont_color=chart_text_color,
+            gridcolor=chart_grid_color,
+        )
+        st.plotly_chart(fig_bar, use_container_width=True, theme=None)
+        st.caption(
+            f"Based on all {len(df_options):,} prepared accident records; this chart does not depend on the map lookup."
+        )
         st.markdown('</div>', unsafe_allow_html=True)
 
     with bot2:
@@ -1338,8 +1567,25 @@ elif selected_page == "Dashboard":
         monthly_counts = df_options.groupby("Accident_Month").size().reset_index(name="Count")
         fig_line = px.line(monthly_counts, x="Accident_Month", y="Count", markers=True)
         fig_line.update_traces(line=dict(color='#2463eb', width=3), marker=dict(size=8, color='#ff4b4b'))
-        fig_line.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=250, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-        st.plotly_chart(fig_line, use_container_width=True)
+        fig_line.update_layout(
+            template=chart_template,
+            font=dict(color=chart_text_color, family="DM Sans", size=13),
+            margin=dict(l=0, r=0, t=0, b=0),
+            height=250,
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+        )
+        fig_line.update_xaxes(
+            title_font_color=chart_text_color,
+            tickfont_color=chart_text_color,
+            gridcolor=chart_grid_color,
+        )
+        fig_line.update_yaxes(
+            title_font_color=chart_text_color,
+            tickfont_color=chart_text_color,
+            gridcolor=chart_grid_color,
+        )
+        st.plotly_chart(fig_line, use_container_width=True, theme=None)
         st.markdown('</div>', unsafe_allow_html=True)
 
 
@@ -1393,7 +1639,6 @@ elif selected_page == "Analytics":
         
     if importance_path.exists():
         importance = pd.read_csv(importance_path).head(15).sort_values("mean_abs_shap")
-        importance["feature"] = importance["feature"].map(format_shap_feature_name)
         st.markdown("#### Global SHAP feature importance")
         st.caption("This chart summarizes which encoded input features most influenced the model across the sampled test records.")
         fig = px.bar(
