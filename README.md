@@ -1,47 +1,125 @@
-# TrafficSense: Smart Traffic Risk Prediction System
+# 🚦 TrafficSense – Smart Traffic Risk Prediction System
 
-TrafficSense is an interactive decision-support dashboard designed to predict the severity of road accidents. By combining historical crash data, route parameters, and real-time weather conditions, it provides granular risk assessments for specific highway segments to aid in proactive traffic management.
+<p align="center">
+  <a href="https://trafficsense-strp.streamlit.app/">
+    <img src="https://static.streamlit.io/badges/streamlit_badge_black_white.svg" alt="Open in Streamlit">
+  </a>
+</p>
 
-## Key Features
+**Live Demo:** [TrafficSense – Smart Traffic Risk Prediction System](https://trafficsense-strp.streamlit.app/)
 
-* **Live Weather Integration:** Fetches real-time temperature, wind, and precipitation data via the Open-Meteo API to dynamically adjust predictive risk models.
-* **Spatial Risk Mapping:** Visualizes multi-segment highway corridors and historical accident hotspots using interactive Plotly maps.
-* **Explainable AI:** Utilizes SHAP (SHapley Additive exPlanations) to provide human-readable insights into which road or weather factors most influenced a specific severity prediction.
-* **Data Persistence:** Automatically logs new predictions to a CSV and allows users to append custom location segments directly from the user interface.
+## 📌 About the Project
 
-## Tech Stack
+TrafficSense is a machine learning-based traffic risk prediction system designed to predict road accident severity. It combines historical accident data, road parameters, geographical information, and real-time weather conditions to provide traffic risk assessments through an interactive dashboard.
 
-* **Frontend:** Streamlit, Plotly
-* **Machine Learning:** XGBoost, Scikit-learn, SHAP
-* **Data Processing:** Pandas, NumPy
-* **External APIs:** Open-Street Maps(For Map Display),Open-Meteo (Real-time Weather)
+## ✨ Key Features
 
-## Project Structure
+- **Accident Severity Prediction:** Uses an XGBoost machine learning model to predict accident severity.
+- **Live Weather Integration:** Fetches real-time weather information using the Open-Meteo API.
+- **Interactive Risk Mapping:** Visualizes highway segments and accident hotspots using Plotly maps.
+- **Explainable AI:** Uses SHAP to explain factors influencing model predictions.
+- **Prediction History:** Automatically stores prediction records in CSV files.
+- **Custom Locations:** Allows users to add geographical road segments through the dashboard.
 
-* `app.py`: The main Streamlit dashboard application.
-* `generate_coordinates.py`: Script to interpolate and generate granular spatial mapping coordinates for road segments.
-* `notebooks/`: Jupyter notebooks for exploratory data analysis (`01`), preprocessing (`02`), and model training (`03`).
-* `models/`: Contains the serialized XGBoost model, label encoders, and evaluation metrics (`.pkl` and `.json` files).
-* `data/`: Raw and processed dataset files, including prediction logs and location segments.
+## 🛠️ Tech Stack
 
-## Installation and Setup
+| Category | Technologies |
+|---|---|
+| Programming Language | Python |
+| Dashboard | Streamlit |
+| Machine Learning | XGBoost, Scikit-learn |
+| Explainable AI | SHAP |
+| Data Processing | Pandas, NumPy |
+| Visualization | Plotly |
+| Mapping | OpenStreetMap |
+| Weather API | Open-Meteo |
 
-1. **Clone the repository** and navigate to the project directory:
-   ```bash
-   git clone https://github.com/Priyanshi-070207/Smart-Traffic-Risk-Prediction.git
-   cd Smart-Traffic-Risk-Prediction
-   ```
-2. **Install the required dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
+## 📂 Project Structure
 
-3. **Generate map coordinate segments** (required for the dashboard map to render):
-   ```bash
-   python generate_coordinates.py
-   ```
+```text
+TrafficSense/
+│
+├── app.py
+├── generate_coordinates.py
+├── requirements.txt
+├── README.md
+│
+├── data/
+├── models/
+├── notebooks/
+└── .devcontainer/
+```
 
-4. **Launch the application:**
-   ```bash
-   streamlit run app.py
-   ```
+## ⚙️ Installation and Setup
+
+**1. Clone the repository**
+
+```bash
+git clone https://github.com/Priy​​anshi-070207/TrafficSense--Smart-Traffic-Risk-Prediction-System.git
+
+cd TrafficSense--Smart-Traffic-Risk-Prediction-System
+```
+
+**2. Install dependencies**
+
+```bash
+pip install -r requirements.txt
+```
+
+**3. Generate map coordinates**
+
+```bash
+python generate_coordinates.py
+```
+
+**4. Run the application**
+
+```bash
+streamlit run app.py
+```
+
+The application will be available at `http://localhost:8501`.
+
+## 🔄 System Workflow
+
+1. Historical accident data collection.
+2. Data preprocessing and feature engineering.
+3. XGBoost model training.
+4. User input and real-time weather retrieval.
+5. Accident severity prediction.
+6. Interactive risk visualization.
+7. SHAP-based prediction explanation.
+8. Prediction logging.
+
+## 🎯 Project Objectives
+
+- Predict road accident severity using machine learning.
+- Analyze historical accident patterns.
+- Incorporate real-time weather conditions.
+- Identify geographical accident hotspots.
+- Improve prediction transparency through Explainable AI.
+
+## 🚀 Future Scope
+
+- Integration of live traffic density.
+- Expansion to more highway locations.
+- Improved prediction models.
+- Advanced real-time traffic monitoring.
+
+## ⚠️ Disclaimer
+
+TrafficSense provides estimated traffic risk assessments for educational and decision-support purposes. Predictions are not guaranteed and should not replace official traffic safety information.
+
+## 👩‍💻 Project Information
+
+- **Project Name:** TrafficSense – Smart Traffic Risk Prediction System
+- **Domain:** Machine Learning and Data Science
+- **Language:** Python
+- **Deployment:** Streamlit Community Cloud
+- **Repository:** [GitHub](https://github.com/Priy​​anshi-070207/TrafficSense--Smart-Traffic-Risk-Prediction-System)
+
+---
+
+<p align="center">
+  **TrafficSense – Making Roads Smarter Through Machine Learning. 🚦**
+</p>
